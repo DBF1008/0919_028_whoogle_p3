@@ -1,5 +1,6 @@
 from app import app
 from app.request import Request
+from app.utils.ratelimit import rate_limiter
 from app.utils.session import generate_key
 from test.mock_google import build_mock_response
 import httpx
@@ -13,6 +14,16 @@ demo_config = {
     'lang_search': random.choice(app.config['LANGUAGES'])['value'],
     'country': random.choice(app.config['COUNTRIES'])['value']
 }
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    # Keep each test isolated from buckets created by other tests
+    rate_limiter.reset()
+    app.config['RATELIMIT_ENABLED'] = True
+    yield
+    rate_limiter.reset()
+    app.config['RATELIMIT_ENABLED'] = True
 
 
 @pytest.fixture(autouse=True)

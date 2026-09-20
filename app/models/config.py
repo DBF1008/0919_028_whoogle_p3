@@ -18,6 +18,50 @@ from cssutils.css.cssstylerule import CSSStyleRule
 cssutils.log.setLevel(logging.CRITICAL)
 
 
+# Defaults for the dual-layer (IP + session) rate limiter used on the
+# /search and /autocomplete endpoints. All thresholds are configurable with
+# environment variables; these are server-side only and intentionally cannot
+# be modified by client configuration (including WHOOGLE_CONFIG_DISABLE).
+RATE_LIMIT_DEFAULTS = {
+    'RATELIMIT_ENABLED': True,
+    'RATELIMIT_IP_LIMIT': 30,
+    'RATELIMIT_IP_BURST': 30,
+    'RATELIMIT_IP_WINDOW': 60,
+    'RATELIMIT_SESSION_LIMIT': 20,
+    'RATELIMIT_SESSION_BURST': 20,
+    'RATELIMIT_SESSION_WINDOW': 60,
+}
+
+
+def load_rate_limit_config():
+    """Build rate limiter settings from environment variables.
+
+    Environment variables:
+        WHOOGLE_RATELIMIT_ENABLED: master switch (default on)
+        WHOOGLE_RATELIMIT_IP_LIMIT / _BURST / _WINDOW: per-IP sustained
+            request limit, burst capacity, and window in seconds
+        WHOOGLE_RATELIMIT_SESSION_LIMIT / _BURST / _WINDOW: per-session
+            sustained request limit, burst capacity, and window in seconds
+    """
+    settings = dict(RATE_LIMIT_DEFAULTS)
+    settings['RATELIMIT_ENABLED'] = read_config_bool(
+        'WHOOGLE_RATELIMIT_ENABLED', True)
+    for key in RATE_LIMIT_DEFAULTS:
+        if key == 'RATELIMIT_ENABLED':
+            continue
+        env_key = 'WHOOGLE_' + key
+        raw_value = os.getenv(env_key)
+        if raw_value is None:
+            continue
+        try:
+            settings[key] = max(1, int(raw_value))
+        except ValueError:
+            logging.getLogger(__name__).warning(
+                'Invalid value %r for %s, falling back to %d',
+                raw_value, env_key, RATE_LIMIT_DEFAULTS[key])
+    return settings
+
+
 def get_rule_for_selector(stylesheet: CSSStyleSheet,
                           selector: str) -> Optional[CSSStyleRule]:
     """Search for a rule that matches a given selector in a stylesheet.

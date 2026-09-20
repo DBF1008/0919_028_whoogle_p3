@@ -24,6 +24,7 @@ from app.utils.misc import empty_gif, placeholder_img, get_proxy_host_url, \
 from app.filter import Filter
 from app.utils.misc import read_config_bool, get_client_ip, get_request_url, \
     check_for_update, encrypt_string
+from app.utils.ratelimit import RATE_LIMITED_ENDPOINTS, rate_limiter
 from app.utils.widgets import *
 from app.utils.results import bold_search_terms,\
     add_currency_card, check_currency, get_tabs_content
@@ -125,6 +126,52 @@ def session_required(f):
     return decorated
 
 
+def enforce_rate_limit():
+    """Apply the dual-layer (IP + session) rate limiter.
+
+    Runs in the before_request hook, before the session_required and
+    auth_required decorators, so it never changes that decorator chain's
+    execution order. Returns a 429 response with a Retry-After header when
+    either layer rejects the request, otherwise None.
+    """
+    if not app.config.get('RATELIMIT_ENABLED', True):
+        return None
+
+    if request.endpoint not in RATE_LIMITED_ENDPOINTS:
+        return None
+
+    client_ip = get_client_ip(request) or 'unknown'
+    # session['uuid'] is server-assigned in before_request and cannot be
+    # modified through client configuration, so it is a safe session key even
+    # when WHOOGLE_CONFIG_DISABLE is set.
+    session_id = session.get('uuid') if session else None
+
+    allowed, scope, retry_after = rate_limiter.check(
+        app.config, client_ip, session_id)
+    if allowed:
+        return None
+
+    wants_json = (
+        request.args.get('format') == 'json' or
+        'application/json' in request.headers.get('Accept', ''))
+    headers = {'Retry-After': str(retry_after)}
+    message = (
+        'Rate limit exceeded. Too many requests, please retry later.')
+
+    if wants_json:
+        response = jsonify({
+            'error': True,
+            'error_message': message,
+            'rate_limit_scope': scope,
+            'retry_after': retry_after
+        })
+        response.status_code = 429
+        response.headers.update(headers)
+        return response
+
+    return make_response(message, 429, headers)
+
+
 @app.before_request
 def before_request_func():
     session.permanent = True
@@ -151,6 +198,16 @@ def before_request_func():
         session['uuid'] = str(uuid.uuid4())
         session['key'] = app.enc_key
         session['auth'] = False
+
+    # Enforce the IP/session rate limit on search and autocomplete requests.
+    # This runs after the session is initialized (so session['uuid'] exists,
+    # including for cookie-less clients keyed on IP alone) but before any view
+    # decorator (session_required/auth_required), so the decorator chain order
+    # is unaffected. Limits are server-side env config only and therefore
+    # remain in force when WHOOGLE_CONFIG_DISABLE is set.
+    rate_limited = enforce_rate_limit()
+    if rate_limited is not None:
+        return rate_limited
 
     # Establish config values per user session
     g.user_config = Config(**session['config'])
@@ -202,7 +259,20 @@ def unknown_page(e):
 
 @app.route(f'/{Endpoint.healthz}', methods=['GET'])
 def healthz():
-    return ''
+    # Basic liveness checks (e.g. Docker HEALTHCHECK) expect an empty 200.
+    # Detailed rate-limit metrics are exposed when requested via the
+    # "metrics" query param or an Accept: application/json header.
+    wants_metrics = (
+        request.args.get('metrics') == '1' or
+        request.args.get('format') == 'json' or
+        'application/json' in request.headers.get('Accept', ''))
+    if not wants_metrics:
+        return ''
+
+    return jsonify({
+        'status': 'ok',
+        'rate_limit': rate_limiter.get_stats(app.config)
+    })
 
 
 @app.route('/', methods=['GET'])

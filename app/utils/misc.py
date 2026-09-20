@@ -65,10 +65,17 @@ def read_config_bool(var: str, default: bool=False) -> bool:
 
 
 def get_client_ip(r: Request) -> str:
-    if r.environ.get('HTTP_X_FORWARDED_FOR') is None:
-        return r.environ['REMOTE_ADDR']
+    # When running behind a reverse proxy, X-Forwarded-For contains a
+    # comma-separated chain: "client, proxy1, proxy2". The leftmost entry is
+    # the original client. ProxyFix strips trusted proxy entries, but parse the
+    # header defensively in case ProxyFix isn't configured.
+    forwarded_for = r.headers.get('X-Forwarded-For', '')
+    if forwarded_for:
+        client_ip = forwarded_for.split(',')[0].strip()
+        if client_ip:
+            return client_ip
 
-    return r.environ['HTTP_X_FORWARDED_FOR']
+    return r.environ.get('REMOTE_ADDR', '')
 
 
 def get_request_url(url: str) -> str:
