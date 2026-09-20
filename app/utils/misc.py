@@ -65,10 +65,26 @@ def read_config_bool(var: str, default: bool=False) -> bool:
 
 
 def get_client_ip(r: Request) -> str:
-    if r.environ.get('HTTP_X_FORWARDED_FOR') is None:
-        return r.environ['REMOTE_ADDR']
+    """Return the real client IP, honoring proxy X-Forwarded-For headers.
 
-    return r.environ['HTTP_X_FORWARDED_FOR']
+    Behind a reverse proxy the originating client is the left-most entry of
+    ``X-Forwarded-For`` (``client, proxy1, proxy2``). Malformed/empty entries
+    are skipped, falling back to the peer address.
+    """
+    forwarded_for = r.environ.get('HTTP_X_FORWARDED_FOR')
+    if forwarded_for:
+        for address in forwarded_for.split(','):
+            address = address.strip()
+            if address.startswith('['):
+                # Bracketed IPv6, optionally with a port: [2001:db8::1]:443
+                address = address[1:].split(']', 1)[0]
+            elif address.count(':') == 1:
+                # IPv4 with a trailing port: 192.0.2.10:443
+                address = address.split(':', 1)[0]
+            if address:
+                return address
+
+    return r.environ.get('REMOTE_ADDR', '')
 
 
 def get_request_url(url: str) -> str:

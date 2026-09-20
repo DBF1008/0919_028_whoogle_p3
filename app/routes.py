@@ -41,6 +41,27 @@ ac_var = 'WHOOGLE_AUTOCOMPLETE'
 autocomplete_enabled = os.getenv(ac_var, '1')
 
 
+# Endpoints protected by the dual-layer (IP + session) rate limiter.
+RATE_LIMITED_ENDPOINTS = (Endpoint.search.value, Endpoint.autocomplete.value)
+
+
+def make_rate_limited_response(retry_after):
+    """Build a 429 response advertising when the client may retry."""
+    accept_header = request.headers.get('Accept', '')
+    if 'application/json' in accept_header or 'application/*+json' in accept_header:
+        body = jsonify({
+            'error': True,
+            'error_message': 'Rate limit exceeded. Please slow down.',
+            'retry_after': retry_after
+        })
+    else:
+        body = 'Rate limit exceeded. Please try again later.'
+
+    response = make_response(body, 429)
+    response.headers['Retry-After'] = str(retry_after)
+    return response
+
+
 def get_search_name(tbm):
     for tab in app.config['HEADER_TABS'].values():
         if tab['tbm'] == tbm:
@@ -152,6 +173,21 @@ def before_request_func():
         session['key'] = app.enc_key
         session['auth'] = False
 
+    # Rate limiting runs here, before g.user_config/g.user_request are built
+    # and before the @session_required/@auth_required decorator chain, so a
+    # blocked client never reaches Google or the auth prompt. The decorator
+    # order on the view functions is unchanged.
+    request_path = request.path.rstrip('/').rsplit('/', 1)[-1]
+    if request_path in RATE_LIMITED_ENDPOINTS:
+        # When config changes are locked down, sessions cannot carry
+        # meaningful per-user state and are regenerated freely; only the IP
+        # layer is enforced in that mode.
+        session_id = None if app.config['CONFIG_DISABLE'] else session['uuid']
+        allowed, retry_after, _layer = app.config['RATE_LIMITER'].check(
+            get_client_ip(request), session_id)
+        if not allowed:
+            return make_rate_limited_response(retry_after)
+
     # Establish config values per user session
     g.user_config = Config(**session['config'])
 
@@ -202,7 +238,10 @@ def unknown_page(e):
 
 @app.route(f'/{Endpoint.healthz}', methods=['GET'])
 def healthz():
-    return ''
+    return jsonify({
+        'status': 'ok',
+        'rate_limit': app.config['RATE_LIMITER'].stats()
+    })
 
 
 @app.route('/', methods=['GET'])

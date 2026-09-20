@@ -44,6 +44,9 @@ def mock_google(monkeypatch):
 
     monkeypatch.setattr(Request, 'send', fake_send)
     monkeypatch.setattr(Request, 'autocomplete', fake_autocomplete)
+    # Reset the shared rate limiter so that limits from one test cannot leak
+    # into another.
+    app.config['RATE_LIMITER'].reset()
     yield
 
 

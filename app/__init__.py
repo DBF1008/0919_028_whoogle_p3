@@ -3,6 +3,7 @@ from app.request import send_tor_signal
 from app.utils.session import generate_key
 from app.utils.bangs import gen_bangs_json, load_all_bangs
 from app.utils.misc import gen_file_hash, read_config_bool
+from app.utils.rate_limit import RateLimitConfig, RateLimiter
 from app.utils.ua_generator import load_ua_pool
 from base64 import b64encode
 from bs4 import MarkupResemblesLocatorWarning
@@ -73,6 +74,8 @@ app.config['DEFAULT_CONFIG'] = os.path.join(
     app.config['CONFIG_PATH'],
     'config.json')
 app.config['CONFIG_DISABLE'] = read_config_bool('WHOOGLE_CONFIG_DISABLE')
+app.config['RATE_LIMIT_CONFIG'] = RateLimitConfig.from_env()
+app.config['RATE_LIMITER'] = RateLimiter(app.config['RATE_LIMIT_CONFIG'])
 app.config['SESSION_FILE_DIR'] = os.path.join(
     app.config['CONFIG_PATH'],
     'session')
